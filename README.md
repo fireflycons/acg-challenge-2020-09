@@ -1,6 +1,6 @@
 # CloudGuruChallenge – Event-Driven Python on AWS
 
-Here lies the source to my solution to [this challenge](https://acloudguru.com/blog/engineering/cloudguruchallenge-python-aws-etl). A write-up on my approach to this can be found in `this blog post`
+Here lies the source to my solution to [this challenge](https://acloudguru.com/blog/engineering/cloudguruchallenge-python-aws-etl). A write-up on my approach to this can be found in [this blog post](https://alistairbmackay.wordpress.com/2020/10/07/cloudguruchallenge-event-driven-python-on-aws/)
 
 ## Deploying the Stack
 
