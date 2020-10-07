@@ -19,6 +19,7 @@ I prefer to use [my own tooling](https://github.com/fireflycons/PSCloudFormation
 
 ```bash
 python -m venv venv
+./venv/scripts/activate
 pip install boto3 gviz_api crhelper requests
 ```
 
