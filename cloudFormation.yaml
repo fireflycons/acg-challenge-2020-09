@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: CloudGuruChallenge - Event-Driven Python on AWS
+
+Parameters:
+
+  JohnHopkinsDataset:
+    Type: String
+    Description: URL to retrieve John Hopkins dataset from
+    Default: https://raw.githubusercontent.com/datasets/covid-19/master/data/time-series-19-covid-combined.csv?opt_id=oeu1598165794642r0.7137185818243232
+
+  NYTDataSet:
+    Type: String
+    Description: URL to retrieve NYT dataset from
+    Default: https://raw.githubusercontent.com/nytimes/covid-19-data/master/us.csv
+
+  DomainName:
+    Description: Domain name for CloudFront. Leave blank for no custom domain
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|(?=^.{4,253}$)(^((?!-)[a-zA-Z0-9-]{0,62}[a-zA-Z0-9]\.)+[a-zA-Z]{2,63}$)
+    ConstraintDescription: must be a valid domain name.
+
+  HostedZoneId:
+    Description: Route53 Zone to create DNS record in. Leave blank if zone not managed by R53
+    Type: String
+    Default: ''
+
+  CertificateArn:
+    Description: Certificate for CloudFront custom domaim - must be in us-east-1. Leave blank for no custom domain
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|arn:aws:acm:us-east-1:\d{12}:certificate/[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}
+    ConstraintDescription: Must be a certificate in us-east-1
+
+Conditions:
+
+  CreateDNSEntry: !Not
+  - !Equals
+    - !Ref HostedZoneId
+    - ''
+
+  CreateCDNCustomDomain: !Not
+  - !Or
+    - !Equals
+      - !Ref DomainName
+      - ''
+    - !Equals
+      - !Ref CertificateArn
+      - ''
+
+
+Resources:
+
+  #region ETL
+
+  # Function that performs the ETL logic
+  ETLFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: etl.handler
+      Runtime: python3.7
+      Timeout: 60
+      MemorySize: 256
+      CodeUri: src/
+      Environment:
+        Variables:
+          TABLE: !Ref CovidDataTable
+          JH_DATA_URL: !Ref JohnHopkinsDataset
+          NYT_DATA_URL: !Ref NYTDataSet
+          ERROR_TOPIC_ARN: !Ref ErrorSNSTopic
+          WEBSITE_BUCKET: !Ref WebSiteBucket
+      Policies:
+        - Statement:
+          - Sid: DynamoData
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:Query
+            Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CovidDataTable}
+          - Sid: S3
+            Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource:
+            - !Sub 'arn:aws:s3:::${WebSiteBucket}/*'
+          - Sid: ErrorReporting
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: !Ref ErrorSNSTopic
+      Events:
+        RunETLJob:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 7 * * ? *)  # 07:00 UTC seems to be after both datasets have been updated.
+
+  # Dynamo table to store the data
+  CovidDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: dataset
+          AttributeType: N
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: dataset  # dataset number (1 = US)
+          KeyType: HASH
+        - AttributeName: date
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 25
+        WriteCapacityUnits: 25
+
+  # Topic to receive error reports
+  ErrorSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: covid-etl-service-errors
+
+  #endregion
+
+  #region BI/Presentation
+
+  # Bucket to host the BI view
+  WebSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'acg-challenge-2020-09-fc-${AWS::Region}'
+
+  # OAI to allow CDN to access the bucket
+  WebSiteCDNOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: OAI for website bucket
+
+  # Policy to allow download of site content by CDN
+  WebSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebSiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Principal:
+              CanonicalUser: !GetAtt
+              - WebSiteCDNOriginAccessIdentity
+              - S3CanonicalUserId
+            Resource:
+            - !Sub 'arn:aws:s3:::${WebSiteBucket}/*'
+
+  # CDN front for the website bucket
+  WebsiteCDN:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: CDN for S3-backed website
+        Aliases: !If
+        - CreateCDNCustomDomain
+        - - !Ref DomainName
+        - !Ref AWS::NoValue
+        Enabled: true
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub '${WebSiteBucket}-origin'
+          ViewerProtocolPolicy: redirect-to-https
+          MinTTL: 0
+          MaxTTL: 0
+          DefaultTTL: 0
+          ForwardedValues:
+            QueryString: false
+        DefaultRootObject: chart.html
+        Origins:
+          - DomainName: !Sub '${WebSiteBucket}.s3.amazonaws.com'
+            Id: !Sub '${WebSiteBucket}-origin'
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${WebSiteCDNOriginAccessIdentity}'
+        PriceClass: PriceClass_100
+        ViewerCertificate: !If
+          - CreateCDNCustomDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+          - !Ref AWS::NoValue
+
+  DNSRecord:
+    Condition: CreateDNSEntry
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref 'HostedZoneId'
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt
+        - WebsiteCDN
+        - DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2 # <- CloudFront hosted zone
+
+  #endregion
+
+  #region Custom Resource
+
+  # Custom resource to invoke the ETL when it is created,
+  # and to empty the website bucket when it is deleted so that the bucket itself can be deleted.
+  StackHelperCustomResourceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: stack_helper.handler
+      Runtime: python3.7
+      Timeout: 15
+      MemorySize: 128
+      CodeUri: custom_resource/stack_helper.py
+      Policies:
+        - Statement:
+          - Sid: Bucket
+            Effect: Allow
+            Action:
+            - s3:DeleteObject
+            - s3:ListBucket
+            Resource:
+            - !Sub 'arn:aws:s3:::${WebSiteBucket}'
+            - !Sub 'arn:aws:s3:::${WebSiteBucket}/*'
+          - Sid: ETL
+            Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource:
+            - !GetAtt
+              - ETLFunction
+              - Arn
+
+
+  # Custom resource to invoke the ETL when it is created,
+  # and to empty the website bucket when it is deleted.
+  # Not _really_ a custom resource!
+  StackHelperResource:
+    Type: Custom::StackHelper
+    Properties:
+      ServiceToken: !GetAtt
+      - StackHelperCustomResourceFunction
+      - Arn
+      BucketName: !Ref WebSiteBucket
+      ETLFunction: !GetAtt
+      - ETLFunction
+      - Arn
+
+  #endregion

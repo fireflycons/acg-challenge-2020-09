@@ -1,0 +1,10 @@
+# Used by New-PSCFNPackage
+- Location: "$VIRTUAL_ENV"
+  Libraries:
+  - certifi
+  - chardet
+  - idna
+  - requests
+  - urllib3
+  - six
+  - gviz_api

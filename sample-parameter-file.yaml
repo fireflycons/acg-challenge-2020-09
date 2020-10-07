@@ -1,0 +1,7 @@
+# See CloudFormation template for a description of these parameters
+- ParameterKey: DomainName
+  ParameterValue: acg-202009.your-r53-domain.com
+- ParameterKey: HostedZoneId
+  ParameterValue: Z3DEXAMPLE
+- ParameterKey: CertificateArn
+  ParameterValue: arn:aws:acm:us-east-1:104552851521:certificate/00000000-0000-0000-0000-000000000000

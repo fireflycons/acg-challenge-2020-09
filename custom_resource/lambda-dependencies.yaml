@@ -1,0 +1,4 @@
+# Used by New-PSCFNPackage
+- Location: "$VIRTUAL_ENV"
+  Libraries:
+  - crhelper
