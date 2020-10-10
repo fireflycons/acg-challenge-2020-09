@@ -36,9 +36,13 @@ Parameters:
 Conditions:
 
   CreateDNSEntry: !Not
-  - !Equals
-    - !Ref HostedZoneId
-    - ''
+  - !Or
+    - !Equals
+      - !Ref HostedZoneId
+      - ''
+    - !Equals
+      - !Ref DomainName
+      - ''
 
   CreateCDNCustomDomain: !Not
   - !Or
